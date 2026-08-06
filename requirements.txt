@@ -1,0 +1,8 @@
+# Core dependencies
+Pillow>=10.0
+pyserial>=3.5
+
+# Optional — uncomment for extra functionality:
+# numpy>=1.24              # faster image packing
+# pillow-heif>=0.13        # open HEIC/HEIF photos (e.g. iPhone)
+# pillow-avif-plugin>=1.4  # open AVIF photos (e.g. from the web)

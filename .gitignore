@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# App runtime data (per-user; not part of the source)
+pool/
+pool.json
+settings.json
+*.err
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
