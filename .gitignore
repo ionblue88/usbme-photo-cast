@@ -16,6 +16,7 @@ pool/
 pool.json
 settings.json
 *.err
+*.log
 
 # OS / editor cruft
 .DS_Store

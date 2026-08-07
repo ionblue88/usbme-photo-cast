@@ -36,8 +36,11 @@ Author: ionblue88 · https://github.com/ionblue88/usbme-photo-cast
 __author__ = "ionblue88"
 __copyright__ = "Copyright (C) 2026 ionblue88"
 __license__ = "AGPL-3.0-or-later"
+__version__ = "1.1.0"
 
 import os, sys, json, time, random, threading, queue, uuid, re, math, hashlib
+import logging, platform, PIL
+from logging.handlers import RotatingFileHandler
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageEnhance, ImageOps
@@ -288,6 +291,41 @@ def save_settings(d):
     try:
         with open(SETTINGS_JSON, "w", encoding="utf-8") as f: json.dump(d, f)
     except Exception: pass
+
+# ---------------- logging / diagnostics ----------------
+LOG_PATH = os.path.join(APP_DIR, "usbme.log")
+
+def _setup_logging():
+    lg = logging.getLogger("usbme"); lg.setLevel(logging.DEBUG)
+    if lg.handlers: return lg
+    debug = bool(os.environ.get("USBME_DEBUG") or load_settings().get("debug"))
+    try:
+        os.makedirs(APP_DIR, exist_ok=True)
+        fh = RotatingFileHandler(LOG_PATH, maxBytes=512 * 1024, backupCount=3, encoding="utf-8")
+        fh.setLevel(logging.DEBUG if debug else logging.INFO)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(message)s", "%Y-%m-%d %H:%M:%S"))
+        lg.addHandler(fh)
+    except Exception:
+        pass
+    return lg
+
+log = _setup_logging()
+log.info("=== USBme Photo Cast %s === %s | Python %s | Pillow %s | numpy %s",
+         __version__, platform.platform(), sys.version.split()[0],
+         PIL.__version__, (np.__version__ if np is not None else "none"))
+
+def _hook_exceptions():
+    sys.excepthook = lambda exc, val, tb: log.critical("uncaught exception", exc_info=(exc, val, tb))
+    try:
+        threading.excepthook = lambda a: log.critical("thread '%s' crashed", a.thread.name,
+                                                       exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+    except Exception:
+        pass
+_hook_exceptions()
+
+def redact(text):
+    """Strip the user's home path (their username) out of shared log text."""
+    return text.replace(os.path.expanduser("~"), "~")
 
 # ---------------- pool ----------------
 def load_pool():
@@ -805,7 +843,12 @@ class App(tk.Tk):
             while True: self.q.get_nowait()()
         except queue.Empty: pass
         self.after(100, self._drain_queue)
-    def log(self, msg): self._post(lambda: self.log_lbl.config(text=msg))
+    def log(self, msg): log.info(msg); self._post(lambda: self.log_lbl.config(text=msg))
+
+    def report_callback_exception(self, exc, val, tb):
+        log.critical("Tk callback error", exc_info=(exc, val, tb))
+        try: self.log("Something went wrong — see the log (About → Copy diagnostics).")
+        except Exception: pass
     def set_progress(self, v): self._post(lambda: self.progress.config(value=v))
     def _on_wheel(self, e):
         try: self.canvas.yview_scroll(int(-e.delta/120), "units")
@@ -1022,8 +1065,12 @@ class App(tk.Tk):
             "Public License v3.0 (AGPL-3.0).\n\n"
             "See the LICENSE file, or https://www.gnu.org/licenses/agpl-3.0.html"
         )
+        ttk.Label(frm, text=f"Version {__version__}", foreground="#888").pack(anchor="w")
         ttk.Label(frm, text=body, wraplength=390, justify="left").pack(anchor="w", pady=(6, 14), fill="x")
-        ttk.Button(frm, text="OK", command=win.destroy).pack(anchor="e")
+        btns = ttk.Frame(frm); btns.pack(fill="x")
+        ttk.Button(btns, text="Open log folder", command=self._open_logs).pack(side="left")
+        ttk.Button(btns, text="Copy diagnostics", command=self._copy_diag).pack(side="left", padx=6)
+        ttk.Button(btns, text="OK", command=win.destroy).pack(side="right")
         win.bind("<Return>", lambda e: win.destroy())
         win.bind("<Escape>", lambda e: win.destroy())
         win.update_idletasks()
@@ -1031,6 +1078,41 @@ class App(tk.Tk):
         y = self.winfo_rooty() + max(0, (self.winfo_height() - win.winfo_height()) // 3)
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
         win.grab_set(); win.focus_set()
+
+    def _open_logs(self):
+        try:
+            if hasattr(os, "startfile"): os.startfile(APP_DIR)          # Windows
+            else:
+                import subprocess
+                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", APP_DIR])
+        except Exception:
+            self.log(f"Logs are in: {APP_DIR}")
+
+    def _diagnostics(self):
+        info = self.frame_info or {}
+        conn = (f"{model_name(info.get('sn'))} (fw {info.get('fw','?')})"
+                if info.get("sn") else "not connected")
+        out = [f"USBme Photo Cast {__version__}",
+               platform.platform(),
+               f"Python {sys.version.split()[0]} | Pillow {PIL.__version__} | "
+               f"numpy {np.__version__ if np is not None else 'none'}",
+               f"Frame: {conn}",
+               f"Pool: {len(load_pool())} photo(s)",
+               "", "--- recent log ---"]
+        try:
+            with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+                tail = f.readlines()[-60:]
+            out.append(redact("".join(tail)).rstrip())
+        except Exception as e:
+            out.append(f"(no log: {e})")
+        return "\n".join(out)
+
+    def _copy_diag(self):
+        try:
+            self.clipboard_clear(); self.clipboard_append(self._diagnostics())
+            self.log("Diagnostics copied — review it, then paste into a GitHub issue.")
+        except Exception as e:
+            self.log(f"copy failed: {e}")
 
     def open_wifi(self):
         port = find_frame_port()
