@@ -195,6 +195,7 @@ def send_bin(port, data, on_progress=None, on_log=None):
         ser.reset_input_buffer()          # clear any residue before chunking
         total = (len(data) + CHUNK - 1) // CHUNK
         log.debug("sending %d chunks of %d bytes", total, CHUNK)
+        status("Sending…")                # match the label to the progress bar
         for i in range(total):
             pkt = _chunk(data[i*CHUNK:(i+1)*CHUNK], i); ok = False
             for attempt in range(3):
