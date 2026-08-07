@@ -37,7 +37,7 @@ __author__ = "ionblue88"
 __copyright__ = "Copyright (C) 2026 ionblue88"
 __license__ = "AGPL-3.0-or-later"
 
-import os, sys, json, time, random, threading, queue, uuid, re
+import os, sys, json, time, random, threading, queue, uuid, re, math, hashlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageEnhance, ImageOps
@@ -74,6 +74,9 @@ POOL_DIR = os.path.join(APP_DIR, "pool")
 POOL_JSON = os.path.join(APP_DIR, "pool.json")
 # gentle preprocessing for 6-colour e-ink (approximates the app's PhotoConvert)
 ENH_BRIGHTNESS, ENH_CONTRAST, ENH_COLOR, ENH_SHARPNESS = 1.0, 1.08, 1.05, 1.4
+# "Optimise for e-ink" pass (per-photo checkbox): reclaim the tonal range and boost colour
+# so flat, low-saturation photos don't look dull on the limited 6-colour panel.
+OPT_CUTOFF, OPT_COLOR, OPT_CONTRAST, OPT_SHARPNESS = 1, 1.35, 1.12, 1.5
 
 PALETTE_PURE = [(0,0,0),(255,255,255),(255,0,0),(0,255,0),(0,0,255),(255,255,0)]
 DEVICE_CODE  = [0, 1, 3, 6, 5, 2]     # palette slot -> frame nibble code
@@ -90,13 +93,19 @@ def _palette_image():
     pal.putpalette(flat)
     return pal
 
-def encode_image(img):
-    """PIL RGB image (any size) -> (bin_bytes 307200, preview RGB image 1024x600)."""
-    img = img.convert("RGB").resize((PANEL_W, PANEL_H), Image.LANCZOS)
-    if ENH_BRIGHTNESS != 1.0: img = ImageEnhance.Brightness(img).enhance(ENH_BRIGHTNESS)
-    if ENH_CONTRAST   != 1.0: img = ImageEnhance.Contrast(img).enhance(ENH_CONTRAST)
-    if ENH_COLOR      != 1.0: img = ImageEnhance.Color(img).enhance(ENH_COLOR)
-    if ENH_SHARPNESS  != 1.0: img = ImageEnhance.Sharpness(img).enhance(ENH_SHARPNESS)
+def encode_to_panel(img, pw, ph, optimise=False):
+    """RGB image (already the panel's aspect) -> (bin_bytes = pw*ph/2, dithered preview) at pw x ph."""
+    img = img.convert("RGB").resize((pw, ph), Image.LANCZOS)
+    if optimise:
+        img = ImageOps.autocontrast(img, cutoff=OPT_CUTOFF, preserve_tone=True)  # reclaim range
+        img = ImageEnhance.Color(img).enhance(OPT_COLOR)                          # boost saturation
+        img = ImageEnhance.Contrast(img).enhance(OPT_CONTRAST)
+        img = ImageEnhance.Sharpness(img).enhance(OPT_SHARPNESS)
+    else:
+        if ENH_BRIGHTNESS != 1.0: img = ImageEnhance.Brightness(img).enhance(ENH_BRIGHTNESS)
+        if ENH_CONTRAST   != 1.0: img = ImageEnhance.Contrast(img).enhance(ENH_CONTRAST)
+        if ENH_COLOR      != 1.0: img = ImageEnhance.Color(img).enhance(ENH_COLOR)
+        if ENH_SHARPNESS  != 1.0: img = ImageEnhance.Sharpness(img).enhance(ENH_SHARPNESS)
     q = img.quantize(palette=_palette_image(), dither=Image.Dither.FLOYDSTEINBERG)
     idx = q.tobytes()                                  # 1 byte/pixel palette index 0..5
     if np is not None:
@@ -104,7 +113,7 @@ def encode_image(img):
         codes = lut[np.frombuffer(idx, dtype=np.uint8)]
         out = ((codes[0::2] << 4) | codes[1::2]).astype(np.uint8).tobytes()
     else:
-        out = bytearray((PANEL_W // 2) * PANEL_H); j = 0
+        out = bytearray((pw // 2) * ph); j = 0
         for i in range(0, len(idx), 2):
             out[j] = ((DEVICE_CODE[idx[i]] & 15) << 4) | (DEVICE_CODE[idx[i+1]] & 15); j += 1
         out = bytes(out)
@@ -234,6 +243,41 @@ def model_name(sn):
     if u.startswith("F7"):    return "F7"
     return "Frame"
 
+# ---------------- aspect / model helpers ----------------
+def aspect_key(w, h):
+    """Orientation-free reduced ratio 'long:short' — e.g. 1024x600 -> '128:75'. This is the key a
+    crop is stored under; frames that share it (F13/F8) share a crop, and the frame can be rotated."""
+    lo, hi = sorted((int(w), int(h)))
+    g = math.gcd(hi, lo) or 1
+    return f"{hi // g}:{lo // g}"
+
+def panel_aspect_key():
+    return aspect_key(PANEL_W, PANEL_H)
+
+def aspect_choices():
+    """Distinct crop aspects with model labels: [(label, akey, (w, h)), ...]."""
+    groups = {}
+    for m, wh in PANEL_SIZES.items():
+        k = aspect_key(*wh)
+        groups.setdefault(k, {"models": [], "wh": wh})
+        groups[k]["models"].append(m)
+    return [(" / ".join(v["models"]) + f"  ({v['wh'][0]}×{v['wh'][1]})", k, v["wh"])
+            for k, v in groups.items()]
+
+def wh_for_aspect(akey):
+    for _, k, wh in aspect_choices():
+        if k == akey: return wh
+    return (PANEL_W, PANEL_H)
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""): h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
 # ---------------- settings ----------------
 SETTINGS_JSON = os.path.join(APP_DIR, "settings.json")
 def load_settings():
@@ -254,96 +298,216 @@ def load_pool():
     return []
 def save_pool(items):
     with open(POOL_JSON, "w", encoding="utf-8") as f: json.dump(items, f, indent=1)
-def build_pool_assets(master, portrait=False):
-    """master = photo in its viewing orientation. Returns (panel_bin, display_preview) for the
-    CURRENT panel. If the master's orientation differs from the panel's native orientation it is
-    rotated anti-clockwise to fill it; the preview is kept in the master's orientation."""
-    rotated = (master.width >= master.height) != (PANEL_W >= PANEL_H)
-    panel = master.rotate(90, expand=True) if rotated else master       # CCW to fill the panel
-    bin_bytes, panel_preview = encode_image(panel)
-    disp = panel_preview.rotate(-90, expand=True) if rotated else panel_preview
+def _src_path(pid):
+    jpg = os.path.join(POOL_DIR, pid + "_src.jpg")
+    if os.path.exists(jpg): return jpg
+    png = os.path.join(POOL_DIR, pid + "_src.png")           # legacy master
+    return png if os.path.exists(png) else jpg
+
+def save_source(pid, img, keep_original):
+    """Store the source photo. keep_original -> full-res JPEG q95; else q92 capped at 3000px long edge."""
+    img = img.convert("RGB")
+    if not keep_original:
+        longest = max(img.width, img.height)
+        if longest > 3000:
+            s = 3000.0 / longest
+            img = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))), Image.LANCZOS)
+    path = os.path.join(POOL_DIR, pid + "_src.jpg")
+    img.save(path, "JPEG", quality=(95 if keep_original else 92))
+    legacy = os.path.join(POOL_DIR, pid + "_src.png")
+    if os.path.exists(legacy):
+        try: os.remove(legacy)
+        except OSError: pass
+    return path
+
+def _clamp_box(nbox):
+    x0, y0, x1, y1 = nbox
+    x0, x1 = sorted((min(max(x0, 0.0), 1.0), min(max(x1, 0.0), 1.0)))
+    y0, y1 = sorted((min(max(y0, 0.0), 1.0), min(max(y1, 0.0), 1.0)))
+    return [x0, y0, x1, y1]
+
+def render_crop(pid, crop, pw, ph):
+    """source + normalized crop box -> (bin_bytes, display preview) fitted to pw x ph. The cropped
+    region is rotated to fill the panel buffer if its orientation differs (the frame is rotated to
+    match); the returned preview is kept in the crop's own orientation."""
+    src = Image.open(_src_path(pid)).convert("RGB")
+    W, H = src.size
+    x0, y0, x1, y1 = _clamp_box(crop["box"])
+    region = src.crop((round(x0 * W), round(y0 * H), round(x1 * W), round(y1 * H)))
+    if region.width < 2 or region.height < 2: region = src
+    rotated = (region.width >= region.height) != (pw >= ph)
+    panel_src = region.rotate(90, expand=True) if rotated else region
+    bin_bytes, prev = encode_to_panel(panel_src, pw, ph, crop.get("optimise", True))
+    disp = prev.rotate(-90, expand=True) if rotated else prev
     return bin_bytes, disp
 
-def _write_item(pid, master, portrait):
-    bin_bytes, disp = build_pool_assets(master, portrait)
-    with open(os.path.join(POOL_DIR, pid + ".bin"), "wb") as f: f.write(bin_bytes)
-    disp.save(os.path.join(POOL_DIR, pid + ".png"))                     # preview, original orientation
-    master.save(os.path.join(POOL_DIR, pid + "_src.png"))              # RGB master, original orientation
+def crop_for_panel(item):
+    """The crop stored for the connected panel's aspect, if any."""
+    return item.get("crops", {}).get(panel_aspect_key())
 
-def add_to_pool(name, master, portrait):
+def _thumb_target(item):
+    """(crop, pw, ph) for this item's pool thumbnail: the connected panel's crop if present,
+    else the first crop rendered at its own model's resolution."""
+    crops = item.get("crops", {})
+    if not crops: return None, 0, 0
+    ak = panel_aspect_key()
+    if ak in crops: return crops[ak], PANEL_W, PANEL_H
+    first = next(iter(crops)); return (crops[first], *wh_for_aspect(first))
+
+def write_thumbnail(item):
+    """Cache <pid>.png = dithered preview of the item's display crop."""
+    pid = item["id"]; crop, pw, ph = _thumb_target(item)
+    path = os.path.join(POOL_DIR, pid + ".png")
+    if not crop:
+        if os.path.exists(path):
+            try: os.remove(path)
+            except OSError: pass
+        return
+    try:
+        _, disp = render_crop(pid, crop, pw, ph)
+        disp.save(path)
+    except Exception:
+        pass
+
+def add_to_pool(name, src_img, akey, nbox, optimise, keep_original):
     items = load_pool(); pid = uuid.uuid4().hex[:12]
-    _write_item(pid, master, portrait)
-    items.append({"id": pid, "name": name, "portrait": portrait, "added": int(time.time())})
-    save_pool(items); return pid
+    save_source(pid, src_img, keep_original)
+    it = {"id": pid, "name": name, "added": int(time.time()),
+          "src_hash": sha256_file(_src_path(pid)),
+          "crops": {akey: {"box": _clamp_box(nbox), "optimise": bool(optimise)}}}
+    items.append(it); save_pool(items)
+    write_thumbnail(it)
+    return pid
 
-def rebuild_pool_item(pid, master, portrait):
-    _write_item(pid, master, portrait)
-
-def bin_for_pool_item(pid):
-    """Encode a pool item's master to the CURRENT panel size (so the pool adapts to whichever
-    model is connected). Falls back to the cached .bin if there's no master."""
-    src = os.path.join(POOL_DIR, pid + "_src.png")
-    if os.path.exists(src):
-        item = next((it for it in load_pool() if it["id"] == pid), None)
-        portrait = item.get("portrait", False) if item else False
-        bin_bytes, _ = build_pool_assets(Image.open(src).convert("RGB"), portrait)
-        return bin_bytes
-    with open(os.path.join(POOL_DIR, pid + ".bin"), "rb") as f:
-        return f.read()
-
-def rotate_pool_item(pid, cw=True):
-    """Rotate a pool item 90° (cw=clockwise). Swaps orientation; rebuilds files + metadata."""
+def set_crop(pid, akey, nbox, optimise):
+    """Add or replace one aspect's crop on an existing item; refresh its thumbnail."""
     items = load_pool(); it = next((x for x in items if x["id"] == pid), None)
     if not it: return
-    src = os.path.join(POOL_DIR, pid + "_src.png")
-    if not os.path.exists(src): src = os.path.join(POOL_DIR, pid + ".png")
-    master = Image.open(src).convert("RGB").rotate(-90 if cw else 90, expand=True)
-    new_portrait = master.height > master.width
-    lo, hi = min(PANEL_W, PANEL_H), max(PANEL_W, PANEL_H)
-    master = master.resize((lo, hi) if new_portrait else (hi, lo), Image.LANCZOS)
-    it["portrait"] = new_portrait; save_pool(items)
-    rebuild_pool_item(pid, master, new_portrait)
+    it.setdefault("crops", {})[akey] = {"box": _clamp_box(nbox), "optimise": bool(optimise)}
+    save_pool(items); write_thumbnail(it)
+
+def bin_for_pool_item(pid, pw=None, ph=None):
+    """Encode the crop matching the (connected) panel -> bin_bytes, or None if there's no crop
+    stored for that aspect."""
+    if pw is None: pw, ph = PANEL_W, PANEL_H
+    it = next((x for x in load_pool() if x["id"] == pid), None)
+    if not it: return None
+    crop = it.get("crops", {}).get(aspect_key(pw, ph))
+    if not crop: return None
+    bin_bytes, _ = render_crop(pid, crop, pw, ph)
+    return bin_bytes
+
 def delete_from_pool(pid):
     items = [it for it in load_pool() if it["id"] != pid]; save_pool(items)
-    for ext in (".bin", ".png", "_src.png"):
-        p = os.path.join(POOL_DIR, pid + ext)
-        if os.path.exists(p):
-            try: os.remove(p)
+    for f in os.listdir(POOL_DIR):
+        if f.startswith(pid):
+            try: os.remove(os.path.join(POOL_DIR, f))
             except OSError: pass
+
+def migrate_pool():
+    """One-time upgrade of legacy items (panel-sized _src.png master + portrait/optimise fields)
+    to the new model: a source photo + per-aspect normalized crops + a source hash."""
+    items = load_pool(); changed = False
+    for it in items:
+        if "crops" in it: continue
+        changed = True; pid = it["id"]
+        old_png = os.path.join(POOL_DIR, pid + "_src.png")
+        if os.path.exists(old_png):
+            img = Image.open(old_png).convert("RGB")
+            save_source(pid, img, keep_original=True)          # already panel-sized; don't shrink again
+            ak = aspect_key(img.width, img.height)
+            it["crops"] = {ak: {"box": [0.0, 0.0, 1.0, 1.0], "optimise": bool(it.get("optimise", False))}}
+            it["src_hash"] = sha256_file(_src_path(pid))
+        else:
+            it["crops"] = {}; it["src_hash"] = ""
+        it.pop("portrait", None); it.pop("optimise", None)
+        stale = os.path.join(POOL_DIR, pid + ".bin")
+        if os.path.exists(stale):
+            try: os.remove(stale)
+            except OSError: pass
+    if changed:
+        save_pool(items)
+        for it in items: write_thumbnail(it)
 
 # =================================================================
 #                              GUI
 # =================================================================
+class _Tooltip:
+    """Minimal hover tooltip for a widget."""
+    def __init__(self, widget, text):
+        self.widget, self.text, self.tip = widget, text, None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _=None):
+        if self.tip or not self.text: return
+        x = self.widget.winfo_rootx() + 18
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip = tk.Toplevel(self.widget); self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self.tip, text=self.text, justify="left", background="#ffffe0",
+                 relief="solid", borderwidth=1, wraplength=300,
+                 font=("Segoe UI", 9), padx=6, pady=4).pack()
+
+    def _hide(self, _=None):
+        if self.tip: self.tip.destroy(); self.tip = None
+
+
 class CropDialog(tk.Toplevel):
-    """Aspect-locked (1024:600) crop over the chosen image. Drag inside to move,
-    drag a corner to resize, Rotate for orientation."""
-    MAXW, MAXH, HANDLE = 900, 540, 9
+    """Aspect-locked crop with a live 6-colour e-ink preview beside it. Drag inside the crop
+    box to move, drag a corner to resize; the preview reflows as you resize the window."""
+    MAXW, MAXH, HANDLE = 720, 520, 9
 
     def __init__(self, master, img, name, on_done):
         super().__init__(master)
-        self.title("Crop to frame (1024 x 600)")
+        self.title(f"Crop to frame ({PANEL_W} × {PANEL_H})")
         self.transient(master); self.grab_set()
         self.on_done = on_done
         self.src = img            # already-loaded, EXIF-corrected RGB image
         self.name = name
-        self.tkimg = None
+        self.tkimg = None; self._prev_tk = None
         self.drag_mode = None; self.anchor = None
         self.aspect = ASPECT                                 # current crop-box aspect
+        self.optimise = tk.BooleanVar(value=True)            # boost colour/contrast for e-ink
+        self._resize_after = None
 
-        self.canvas = tk.Canvas(self, background="#222", highlightthickness=0)
-        self.canvas.pack(padx=10, pady=10)
-        bar = ttk.Frame(self); bar.pack(fill="x", padx=10, pady=(0,10))
+        main = ttk.Frame(self, padding=10); main.pack(fill="both", expand=True)
+        main.columnconfigure(0, weight=0)                    # crop area — natural size
+        main.columnconfigure(1, weight=1)                    # preview — takes the extra room
+        main.rowconfigure(0, weight=1)
+
+        crop_box = ttk.LabelFrame(main, text="Crop", padding=6)
+        crop_box.grid(row=0, column=0, sticky="n", padx=(0,10))
+        self.canvas = tk.Canvas(crop_box, background="#222", highlightthickness=0)
+        self.canvas.pack()
+
+        prev_box = ttk.LabelFrame(main, text="Frame preview — 6-colour e-ink", padding=6)
+        prev_box.grid(row=0, column=1, sticky="nsew")
+        prev_box.rowconfigure(0, weight=1); prev_box.columnconfigure(0, weight=1)
+        self.preview_lbl = ttk.Label(prev_box, anchor="center")
+        self.preview_lbl.grid(row=0, column=0, sticky="nsew")
+        prev_box.bind("<Configure>", self._on_prev_resize)
+
+        bar = ttk.Frame(self, padding=(10,0,10,10)); bar.pack(fill="x")
         ttk.Button(bar, text="↻ Rotate image", command=self.rotate_image).pack(side="left")
         ttk.Button(bar, text="Rotate crop box", command=self.toggle_orient).pack(side="left", padx=(8,0))
         self.orient_lbl = ttk.Label(bar, text="landscape" if ASPECT >= 1 else "portrait")
         self.orient_lbl.pack(side="left", padx=(6,0))
+        chk = ttk.Checkbutton(bar, text="Optimise for e-ink", variable=self.optimise,
+                              command=self._update_preview)
+        chk.pack(side="left", padx=(16,0))
+        _Tooltip(chk, "Boost colour and contrast before sending, so dull, low-saturation photos "
+                      "look less flat on the frame's 6-colour e-ink panel. "
+                      "Compare on vs off in the preview beside the crop.")
         ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(bar, text="Use this crop", command=self.confirm).pack(side="right", padx=6)
 
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
-        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag_mode", None))
+        self.canvas.bind("<ButtonRelease-1>",
+                         lambda e: (setattr(self, "drag_mode", None), self._update_preview()))
         self._fit()
+        self.minsize(self.dw + 260, self.dh + 90)            # keep room for crop + a usable preview
 
     def _fit(self):
         iw, ih = self.src.size
@@ -354,6 +518,7 @@ class CropDialog(tk.Toplevel):
         self.canvas.config(width=self.dw, height=self.dh)
         self._reset_box()
         self.redraw()
+        self._update_preview()
 
     def _reset_box(self):
         # largest box of the current aspect, centred in the image
@@ -366,7 +531,7 @@ class CropDialog(tk.Toplevel):
     def toggle_orient(self):
         self.aspect = 1.0 / self.aspect
         self.orient_lbl.config(text="landscape" if self.aspect >= 1 else "portrait")
-        self._reset_box(); self.redraw()
+        self._reset_box(); self.redraw(); self._update_preview()
 
     def rotate_image(self):
         self.src = self.src.rotate(-90, expand=True)   # 90° CW; corrects a sideways source photo
@@ -384,6 +549,34 @@ class CropDialog(tk.Toplevel):
         h = self.HANDLE
         for hx, hy in [(x0,y0),(x1,y0),(x0,y1),(x1,y1)]:
             c.create_rectangle(hx-h, hy-h, hx+h, hy+h, fill="#37c", outline="#fff")
+
+    def _update_preview(self):
+        """Render the current crop through the e-ink encoder and show it, scaled to fit its box."""
+        if not getattr(self, "preview_lbl", None) or not getattr(self, "scale", None): return
+        try:
+            s = self.scale
+            region = self.src.crop((int(self.box[0]/s), int(self.box[1]/s),
+                                    int(self.box[2]/s), int(self.box[3]/s))).convert("RGB")
+            if region.width < 2 or region.height < 2: return
+            pw, ph = PANEL_W, PANEL_H
+            rotated = (region.width >= region.height) != (pw >= ph)
+            panel_src = region.rotate(90, expand=True) if rotated else region
+            _, prev = encode_to_panel(panel_src, pw, ph, self.optimise.get())
+            disp = prev.rotate(-90, expand=True) if rotated else prev
+            aw, ah = self.preview_lbl.winfo_width(), self.preview_lbl.winfo_height()
+            if aw < 60 or ah < 60: aw, ah = 380, 430          # before the first layout pass
+            sc = max(0.02, min((aw-4)/disp.width, (ah-4)/disp.height, 1.5))
+            thumb = disp.resize((max(1, int(disp.width*sc)), max(1, int(disp.height*sc))), Image.LANCZOS)
+            self._prev_tk = ImageTk.PhotoImage(thumb)
+            self.preview_lbl.config(image=self._prev_tk)
+        except Exception:
+            pass
+
+    def _on_prev_resize(self, event):
+        if self._resize_after:
+            try: self.after_cancel(self._resize_after)
+            except Exception: pass
+        self._resize_after = self.after(120, self._update_preview)
 
     def _corner(self, x, y):
         h = self.HANDLE + 4
@@ -424,10 +617,10 @@ class CropDialog(tk.Toplevel):
         self.redraw()
 
     def confirm(self):
-        s = self.scale
-        box = (int(self.box[0]/s), int(self.box[1]/s), int(self.box[2]/s), int(self.box[3]/s))
-        cropped = self.src.crop(box)
-        self.destroy(); self.on_done(self.name, cropped, self.aspect < 1)
+        s = self.scale; W, H = self.src.size
+        nbox = [(self.box[0]/s)/W, (self.box[1]/s)/H, (self.box[2]/s)/W, (self.box[3]/s)/H]
+        self.destroy()
+        self.on_done(self.name, self.src, panel_aspect_key(), nbox, self.optimise.get())
 
 class WifiDialog(tk.Toplevel):
     def __init__(self, master, on_send):
@@ -522,6 +715,10 @@ class App(tk.Tk):
         self.batt_canvas = tk.Canvas(det, width=40, height=16, highlightthickness=0)
         self.batt_canvas.pack(side="left")
 
+        try:
+            migrate_pool()                    # one-time upgrade of legacy pool items
+        except Exception as e:
+            print("pool migration:", e)
         self.refresh_pool()
         threading.Thread(target=self._poll_connection, daemon=True).start()
         self.after(100, self._drain_queue)
@@ -573,8 +770,6 @@ class App(tk.Tk):
             send_btn.pack(side="left", padx=1)
             send_btn.configure(state=("normal" if self._frame_ready else "disabled"))
             self._send_btns.append(send_btn)
-            ttk.Button(row, text="Rotate 180°", width=12,
-                       command=lambda pid=it["id"]: self.rotate_item(pid)).pack(side="left", padx=1)
             more = ttk.Button(row, text="⋯", width=2)
             more.configure(command=lambda pid=it["id"], nm=it["name"], w=more: self.show_item_menu(pid, nm, w))
             more.pack(side="left", padx=1)
@@ -599,29 +794,22 @@ class App(tk.Tk):
         if messagebox.askyesno("Delete", f"Remove “{name}” from the pool?"):
             delete_from_pool(pid); self.refresh_pool()
 
-    def rotate_item(self, pid):
+    def crop_existing(self, pid, on_saved=None):
         item = next((it for it in load_pool() if it["id"] == pid), None)
         if not item: return
-        portrait = item.get("portrait", False)
-        src = os.path.join(POOL_DIR, pid + "_src.png")
-        if not os.path.exists(src):                       # older items: fall back to the preview
-            src = os.path.join(POOL_DIR, pid + ".png")
         try:
-            master = Image.open(src).convert("RGB").rotate(180)
-            rebuild_pool_item(pid, master, portrait); self.refresh_pool()
-            self.log("Rotated 180°.")
+            img = Image.open(_src_path(pid)).convert("RGB")
         except Exception as e:
-            self.log(f"rotate failed: {e}")
-
-    def rotate_thumb(self, pid):
-        try:
-            rotate_pool_item(pid, cw=True); self.refresh_pool(); self.log("Rotated thumbnail 90°.")
-        except Exception as e:
-            self.log(f"rotate failed: {e}")
+            self.log(f"can't open source: {e}"); return
+        def done(name, src_img, akey, nbox, optimise):
+            set_crop(pid, akey, nbox, optimise)
+            self._post(self.refresh_pool); self.log(f"Cropped “{item['name']}” for this frame.")
+            if on_saved: self._post(on_saved)
+        self._crop = CropDialog(self, img, item["name"], done)
 
     def show_item_menu(self, pid, name, widget):
         m = tk.Menu(self, tearoff=0)
-        m.add_command(label="Rotate thumbnail 90°", command=lambda: self.rotate_thumb(pid))
+        m.add_command(label="Crop…", command=lambda: self.crop_existing(pid))
         m.add_separator()
         m.add_command(label="Delete image", command=lambda: self.delete_item(pid, name))
         try:
@@ -648,17 +836,14 @@ class App(tk.Tk):
             return
         self._crop = CropDialog(self, img, os.path.basename(path), self._crop_done)
 
-    def _crop_done(self, name, cropped, portrait):
-        self.log("Encoding…")
+    def _crop_done(self, name, src_img, akey, nbox, optimise):
+        self.log("Adding…")
         def work():
             try:
-                lo, hi = min(PANEL_W, PANEL_H), max(PANEL_W, PANEL_H)
-                size = (lo, hi) if portrait else (hi, lo)     # master in its viewing orientation
-                master = cropped.convert("RGB").resize(size, Image.LANCZOS)
-                add_to_pool(name, master, portrait)
+                add_to_pool(name, src_img, akey, nbox, optimise, keep_original=False)
                 self._post(self.refresh_pool); self.log(f"Added “{name}” to the pool.")
             except Exception as e:
-                self.log(f"encode failed: {e}")
+                self.log(f"add failed: {e}")
         threading.Thread(target=work, daemon=True).start()
 
     # ---- sending ----
@@ -667,12 +852,18 @@ class App(tk.Tk):
         if not port:
             messagebox.showwarning("No frame", "Frame not detected. Plug in the USB cable and wake the frame."); return
         item = next((it for it in load_pool() if it["id"] == pid), None)
-        name = item["name"] if item else pid
+        if not item: return
+        if panel_aspect_key() not in item.get("crops", {}):     # not cropped for this frame yet
+            self.log("This photo isn't cropped for the connected frame — crop it now.")
+            self.crop_existing(pid, on_saved=lambda: self.send_pool_item(pid))
+            return
         try:
-            data = bin_for_pool_item(pid)      # re-encode to the connected frame's resolution
+            data = bin_for_pool_item(pid)      # encode this frame's crop at its resolution
         except Exception as e:
             self.log(f"encode failed: {e}"); return
-        self._start_send(port, data, name)
+        if not data:
+            self.log("No crop for this frame."); return
+        self._start_send(port, data, item["name"])
 
     def _start_send(self, port, data, label):
         if self.sending:
@@ -703,8 +894,11 @@ class App(tk.Tk):
             self._clear_auto("Auto-send cancelled (frame unplugged)."); return
         if a["left"] <= 0:
             pid, name, port = a["pid"], a["name"], a["port"]; self._clear_auto(None)
+            data = bin_for_pool_item(pid)
+            if not data:
+                self.log(f"Auto-send skipped — “{name}” isn't cropped for this frame."); return
             try:
-                self._start_send(port, bin_for_pool_item(pid), "(auto) " + name)
+                self._start_send(port, data, "(auto) " + name)
             except Exception as e:
                 self.log(f"auto-send failed: {e}")
             return
@@ -846,7 +1040,7 @@ class App(tk.Tk):
             # A sleeping frame (cable in, no SN) must not trigger a send that can only fail.
             awake = present and bool(self.frame_info.get("sn"))
             if awake and self._auto_enabled and not self._auto_fired and not self.sending and not self._auto:
-                items = load_pool()
+                items = [x for x in load_pool() if crop_for_panel(x)]   # only croppable for this frame
                 if items:
                     it = random.choice(items)
                     self._auto_fired = True

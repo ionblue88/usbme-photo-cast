@@ -12,7 +12,8 @@ over the frame's USB serial link. Everything stays on your machine.
 ## Features
 
 - **Crop‑to‑fit editor** — an aspect‑locked crop box matched to your frame's panel, with
-  rotate and portrait/landscape toggles so the photo fills the screen correctly.
+  rotate and portrait/landscape toggles, plus an **Optimise for e‑ink** option that boosts
+  colour and contrast so photos don't look flat on the limited 6‑colour panel.
 - **Photo pool** — keep a library of prepared photos as thumbnails. Each has **Send**,
   **Rotate 180°**, and a **⋯** menu (rotate the thumbnail 90°, or delete it). The grid
   reflows as you widen the window.
