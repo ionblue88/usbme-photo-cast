@@ -455,6 +455,7 @@ def bin_for_pool_item(pid, pw=None, ph=None):
     if not it: return None
     crop = it.get("crops", {}).get(aspect_key(pw, ph))
     if not crop: return None
+    if not os.path.exists(_src_path(pid)): return None        # source file gone from disk
     bin_bytes, _ = render_crop(pid, crop, pw, ph)
     return bin_bytes
 
@@ -1273,7 +1274,8 @@ class App(tk.Tk):
             # A sleeping frame (cable in, no SN) must not trigger a send that can only fail.
             awake = present and bool(self.frame_info.get("sn"))
             if awake and self._auto_enabled and not self._auto_fired and not self.sending and not self._auto:
-                items = [x for x in load_pool() if crop_for_panel(x)]   # only croppable for this frame
+                items = [x for x in load_pool()                        # croppable for this frame…
+                         if crop_for_panel(x) and os.path.exists(_src_path(x["id"]))]   # …and on disk
                 if items:
                     it = random.choice(items)
                     self._auto_fired = True
