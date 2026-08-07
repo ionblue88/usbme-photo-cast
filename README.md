@@ -86,10 +86,12 @@ Then:
 
 1. **Plug in the frame** over USB and **wake it** with its power button — it must be awake
    to answer over serial. When it connects, the status dot turns green and shows the model.
-2. **Add photo…** → choose an image → crop/rotate it to fill the panel → **Add to pool**
-   (or send it right away).
+2. **Add photo…** → choose an image → in the crop editor pick **Crop for:** your frame, frame
+   the shot against the live e‑ink preview, optionally tick **Store original**, then
+   **Use this crop** to add it to the pool.
 3. Click **Send** under any thumbnail to display it now. The panel erases (a few seconds)
-   and then refreshes with your photo.
+   and then refreshes with your photo. (If a photo has no crop for the connected frame, Send
+   opens the editor for that frame first.)
 4. Optionally tick **Auto‑send random photo when frame connects** to have a pooled photo
    pushed automatically on each connect.
 
@@ -108,10 +110,14 @@ image encoding — is documented in **[PROTOCOL.md](PROTOCOL.md)**.
 
 ## Data & privacy
 
-The app is fully local. Prepared photos and settings live in a `USBmePhotoCast` folder in your
-home directory (`~/USBmePhotoCast`): the encoded images in `pool/`, their metadata in
-`pool.json`, and your preferences in `settings.json`. Nothing is uploaded anywhere by this
-tool.
+The app is fully local. Everything lives in a `USBmePhotoCast` folder in your home directory
+(`~/USBmePhotoCast`): your source photos and thumbnails in `pool/`, their crop metadata in
+`pool.json`, preferences in `settings.json`, and a rolling log in `usbme.log`. Nothing is
+uploaded anywhere by this tool.
+
+If you edit a photo's file inside `pool/` directly, the app notices on next use (via a stored
+hash) and clears that photo's crops, so you re‑crop against the new image rather than sending a
+mis‑framed one.
 
 ## Troubleshooting
 
@@ -125,6 +131,19 @@ tool.
   swapped frames, reconnect so the model is re‑detected.
 - **A photo won't open.** Install the optional `pillow-heif` / `pillow-avif-plugin` extras
   for HEIC/AVIF files.
+
+## Reporting a bug
+
+The app keeps a rolling log at `~/USBmePhotoCast/usbme.log`. For a useful report:
+
+1. **About → Verbose logging** (turn it on), then reproduce the problem.
+2. **About → Copy diagnostics** — copies your version, OS, library versions, frame model, and a
+   recent log excerpt to the clipboard, with your username and the frame's serial number stripped.
+3. Paste it into a new issue at
+   [github.com/ionblue88/usbme-photo-cast/issues](https://github.com/ionblue88/usbme-photo-cast/issues).
+
+Your Wi‑Fi password is never written to the log. Verbose logging stays off unless you enable it
+(or set the `USBME_DEBUG=1` environment variable).
 
 ## Disclaimer
 
