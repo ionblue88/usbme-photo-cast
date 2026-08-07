@@ -429,6 +429,30 @@ def migrate_pool():
         save_pool(items)
         for it in items: write_thumbnail(it)
 
+def revalidate_source(pid):
+    """If a pool item's source file changed on disk (hash mismatch), its crops no longer match
+    the image — drop them and re-baseline the hash so the user re-crops. Returns True if reset."""
+    items = load_pool(); it = next((x for x in items if x["id"] == pid), None)
+    if not it: return False
+    cur = sha256_file(_src_path(pid))
+    if not cur or cur == it.get("src_hash"): return False
+    it["crops"] = {}; it["src_hash"] = cur
+    save_pool(items); write_thumbnail(it)          # no crops -> clears the cached thumbnail
+    return True
+
+def revalidate_all():
+    """Check every item's source once (e.g. at startup). Returns names of items whose crops
+    were reset because their source changed."""
+    items = load_pool(); changed = []; dirty = False
+    for it in items:
+        cur = sha256_file(_src_path(it["id"]))
+        if cur and cur != it.get("src_hash"):
+            it["crops"] = {}; it["src_hash"] = cur; changed.append(it); dirty = True
+    if dirty:
+        save_pool(items)
+        for it in changed: write_thumbnail(it)
+    return [it["name"] for it in changed]
+
 # =================================================================
 #                              GUI
 # =================================================================
@@ -764,7 +788,13 @@ class App(tk.Tk):
             migrate_pool()                    # one-time upgrade of legacy pool items
         except Exception as e:
             print("pool migration:", e)
+        try:
+            changed = revalidate_all()        # reset crops for any source edited on disk
+        except Exception as e:
+            changed = []; print("revalidate:", e)
         self.refresh_pool()
+        if changed:
+            self.log(f"{len(changed)} photo(s) changed on disk — re-crop them.")
         threading.Thread(target=self._poll_connection, daemon=True).start()
         self.after(100, self._drain_queue)
 
@@ -800,14 +830,18 @@ class App(tk.Tk):
             cell = ttk.Frame(self.pool_frame, relief="solid", borderwidth=1, padding=6)
             png = os.path.join(POOL_DIR, it["id"] + ".png")
             holder = ttk.Frame(cell, width=200, height=152); holder.pack(); holder.pack_propagate(False)
-            try:
-                im = Image.open(png)
-                sc = min(196/im.width, 150/im.height, 1.0)
-                thumb = im.resize((max(1,int(im.width*sc)), max(1,int(im.height*sc))), Image.LANCZOS)
-                ph = ImageTk.PhotoImage(thumb); self.thumb_refs[it["id"]] = ph
-                ttk.Label(holder, image=ph).place(relx=0.5, rely=0.5, anchor="center")
-            except Exception:
-                ttk.Label(holder, text="(preview missing)").place(relx=0.5, rely=0.5, anchor="center")
+            if not it.get("crops"):
+                ttk.Label(holder, text="⚠ photo changed\nre-crop it\n(Send, or ⋯ → Crop…)",
+                          foreground="#c0392b", justify="center").place(relx=0.5, rely=0.5, anchor="center")
+            else:
+                try:
+                    im = Image.open(png)
+                    sc = min(196/im.width, 150/im.height, 1.0)
+                    thumb = im.resize((max(1,int(im.width*sc)), max(1,int(im.height*sc))), Image.LANCZOS)
+                    ph = ImageTk.PhotoImage(thumb); self.thumb_refs[it["id"]] = ph
+                    ttk.Label(holder, image=ph).place(relx=0.5, rely=0.5, anchor="center")
+                except Exception:
+                    ttk.Label(holder, text="(preview missing)").place(relx=0.5, rely=0.5, anchor="center")
             ttk.Label(cell, text=it["name"][:26], font=("Segoe UI", 8)).pack(pady=(4,2))
             row = ttk.Frame(cell); row.pack()
             send_btn = ttk.Button(row, text="Send", width=6,
@@ -840,6 +874,8 @@ class App(tk.Tk):
             delete_from_pool(pid); self.refresh_pool()
 
     def crop_existing(self, pid, on_saved=None, lock=False):
+        if revalidate_source(pid):
+            self.refresh_pool(); self.log("Photo changed on disk — starting a fresh crop.")
         item = next((it for it in load_pool() if it["id"] == pid), None)
         if not item: return
         try:
@@ -900,6 +936,8 @@ class App(tk.Tk):
         port = find_frame_port()
         if not port:
             messagebox.showwarning("No frame", "Frame not detected. Plug in the USB cable and wake the frame."); return
+        if revalidate_source(pid):
+            self.refresh_pool(); self.log("This photo changed on disk — crop it again.")
         item = next((it for it in load_pool() if it["id"] == pid), None)
         if not item: return
         if panel_aspect_key() not in item.get("crops", {}):     # not cropped for this frame yet
