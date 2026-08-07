@@ -123,11 +123,19 @@ def encode_to_panel(img, pw, ph, optimise=False):
     return out, q.convert("RGB")
 
 # ---------------- sender (confirmed handshake) ----------------
+_last_ports = None
 def find_frame_port():
+    global _last_ports
+    found = None; seen = []
     for p in list_ports.comports():
-        if (p.vid, p.pid) == CH340_VIDPID:
-            return p.device
-    return None
+        seen.append("%s(%04X:%04X)" % (p.device, p.vid or 0, p.pid or 0))
+        if (p.vid, p.pid) == CH340_VIDPID and found is None:
+            found = p.device
+    snap = (tuple(seen), found)
+    if snap != _last_ports:                 # log only on change (poller calls this every 2s)
+        _last_ports = snap
+        log.debug("serial ports: [%s] -> frame %s", ", ".join(seen) or "none", found or "none")
+    return found
 
 def _xor(d):
     x = 0
@@ -157,38 +165,47 @@ def _read_for(ser, wants, timeout):
     return None, bytes(buf)
 
 def send_bin(port, data, on_progress=None, on_log=None):
-    """Send a 307200-byte .bin to the frame. Returns True on success. Only emits
-    read queries (0x23) and image opcodes 0x26/0x27 - never 0x13/0x14."""
-    def log(m):
+    """Send a .bin to the frame. Returns True on success. Only emits read queries (0x23) and
+    image opcodes 0x26/0x27 - never 0x13/0x14."""
+    def status(m):
         if on_log: on_log(m)
-    if len(data) != (PANEL_W // 2) * PANEL_H:
-        log(f"bin is {len(data)} bytes, expected {(PANEL_W//2)*PANEL_H}"); return False
+    expect = (PANEL_W // 2) * PANEL_H
+    log.debug("send_bin: port=%s bytes=%d expect=%d panel=%dx%d", port, len(data), expect, PANEL_W, PANEL_H)
+    if len(data) != expect:
+        status(f"bin is {len(data)} bytes, expected {expect}"); return False
     s = sum(data) & 0xFF
     ser = serial.Serial(port, BAUD, bytesize=8, parity="N", stopbits=1, timeout=0.2)
     try:
         time.sleep(0.3); ser.reset_input_buffer()
         ser.write(_q(0x23, b"SN")); m, raw = _read_for(ser, ["SN:", "VR:"], 2.0)
-        if not m: log("Frame not responding — wake it (power button) and retry."); return False
-        log("Preparing…")
+        log.debug("alive-check reply: %r", _txt(raw)[:80])
+        if not m: status("Frame not responding — wake it (power button) and retry."); return False
+        status("Preparing…")
         ser.reset_input_buffer(); ser.write(_hdr(len(data), s))
         m, raw = _read_for(ser, ["OK", "ok", "FAIL", "fail"], 4.0)
+        log.debug("header reply: %r", _txt(raw)[:80])
         if (not m) or ("FAIL" in _txt(raw).upper()):
-            log("Frame rejected the transfer."); return False
+            status("Frame rejected the transfer."); return False
         # the frame's "OK" and "EARSE_OK" may arrive together or a moment apart
         if "EARSE_OK" not in _txt(raw).upper():
-            log("erasing…")
+            status("erasing…")
             m2, r2 = _read_for(ser, ["EARSE_OK", "earse_ok", "erase_ok"], 12.0)
-            if not m2: log("no erase-complete ack"); return False
+            log.debug("erase reply: %r", _txt(r2)[:80])
+            if not m2: status("no erase-complete ack"); return False
         ser.reset_input_buffer()          # clear any residue before chunking
         total = (len(data) + CHUNK - 1) // CHUNK
+        log.debug("sending %d chunks of %d bytes", total, CHUNK)
         for i in range(total):
             pkt = _chunk(data[i*CHUNK:(i+1)*CHUNK], i); ok = False
-            for _ in range(3):
+            for attempt in range(3):
                 ser.write(pkt); m, _r = _read_for(ser, [f"{i}_OK", f"{i}_ok"], 2.0)
                 if m: ok = True; break
-            if not ok: log(f"chunk {i} not acked - aborted"); return False
+                log.debug("chunk %d attempt %d: no ack (%r)", i, attempt + 1, _txt(_r)[:40])
+            if not ok:
+                status(f"chunk {i} not acked - aborted"); log.debug("aborted at chunk %d/%d", i, total); return False
+            if i % 50 == 0: log.debug("chunk %d/%d acked", i, total)
             if on_progress and (i % 6 == 0 or i == total-1): on_progress((i+1)/total)
-        log("done - image sent."); return True
+        status("done - image sent."); log.debug("send_bin complete: %d chunks", total); return True
     finally:
         ser.close()
 
@@ -203,7 +220,9 @@ def send_wifi(port, ssid, password, phone=""):
         ser.write(_q(0x14, payload))
         time.sleep(0.6)
         resp = ser.read(ser.in_waiting or 1)
-        return True, _txt(resp).strip()
+        reply = _txt(resp).strip()
+        log.debug("wifi 0x14 ssid=%r phone=%r -> reply %r", ssid, phone, reply)   # never the password
+        return True, reply
     finally:
         ser.close()
 
@@ -213,13 +232,14 @@ def query_frame_info(port):
     info = {}
     try:
         ser = serial.Serial(port, BAUD, bytesize=8, parity="N", stopbits=1, timeout=0.2)
-    except Exception:
-        return info
+    except Exception as e:
+        log.debug("query: can't open %s: %s", port, e); return info
     try:
         time.sleep(0.2); ser.reset_input_buffer()
         ser.write(_q(0x23, b"SN")); _m, raw = _read_for(ser, ["VR:"], 1.2); t = _txt(raw)
         sn = re.search(r"SN:([^;]+);", t)
-        if not sn: return info                 # asleep / no reply — skip the rest
+        if not sn:
+            log.debug("query: no SN from %s (asleep?) reply=%r", port, t[:60]); return info
         info["sn"] = sn.group(1)
         vr = re.search(r"VR:([^;]+);", t)
         if vr: info["fw"] = vr.group(1)
@@ -231,6 +251,7 @@ def query_frame_info(port):
         pass
     finally:
         ser.close()
+    log.debug("frame info %s -> %s", port, dict(info))
     return info
 
 def battery_level(mv):
@@ -377,6 +398,8 @@ def render_crop(pid, crop, pw, ph):
     panel_src = region.rotate(90, expand=True) if rotated else region
     bin_bytes, prev = encode_to_panel(panel_src, pw, ph, crop.get("optimise", True))
     disp = prev.rotate(-90, expand=True) if rotated else prev
+    log.debug("render pid=%s src=%dx%d box=%s -> %dx%d bin=%d opt=%s", pid, W, H,
+              [round(c, 3) for c in crop["box"]], pw, ph, len(bin_bytes), crop.get("optimise", True))
     return bin_bytes, disp
 
 def crop_for_panel(item):
@@ -1066,7 +1089,11 @@ class App(tk.Tk):
             "See the LICENSE file, or https://www.gnu.org/licenses/agpl-3.0.html"
         )
         ttk.Label(frm, text=f"Version {__version__}", foreground="#888").pack(anchor="w")
-        ttk.Label(frm, text=body, wraplength=390, justify="left").pack(anchor="w", pady=(6, 14), fill="x")
+        ttk.Label(frm, text=body, wraplength=390, justify="left").pack(anchor="w", pady=(6, 12), fill="x")
+        self._dbg_var = tk.BooleanVar(value=bool(os.environ.get("USBME_DEBUG") or load_settings().get("debug")))
+        ttk.Checkbutton(frm, text="Verbose logging (detailed trace for bug reports)",
+                        variable=self._dbg_var,
+                        command=lambda: self._set_verbose(self._dbg_var.get())).pack(anchor="w", pady=(0, 12))
         btns = ttk.Frame(frm); btns.pack(fill="x")
         ttk.Button(btns, text="Open log folder", command=self._open_logs).pack(side="left")
         ttk.Button(btns, text="Copy diagnostics", command=self._copy_diag).pack(side="left", padx=6)
@@ -1113,6 +1140,12 @@ class App(tk.Tk):
             self.log("Diagnostics copied — review it, then paste into a GitHub issue.")
         except Exception as e:
             self.log(f"copy failed: {e}")
+
+    def _set_verbose(self, on):
+        d = load_settings(); d["debug"] = bool(on); save_settings(d)
+        for h in log.handlers:
+            h.setLevel(logging.DEBUG if on else logging.INFO)
+        self.log(f"Verbose logging {'on' if on else 'off'}.")
 
     def open_wifi(self):
         port = find_frame_port()
