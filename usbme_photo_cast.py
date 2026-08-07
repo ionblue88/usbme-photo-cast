@@ -458,18 +458,24 @@ class CropDialog(tk.Toplevel):
     box to move, drag a corner to resize; the preview reflows as you resize the window."""
     MAXW, MAXH, HANDLE = 720, 520, 9
 
-    def __init__(self, master, img, name, on_done):
+    def __init__(self, master, img, name, on_done, mode="add", crops=None,
+                 start_aspect=None, lock_aspect=None):
         super().__init__(master)
-        self.title(f"Crop to frame ({PANEL_W} × {PANEL_H})")
         self.transient(master); self.grab_set()
         self.on_done = on_done
         self.src = img            # already-loaded, EXIF-corrected RGB image
         self.name = name
+        self.mode = mode
+        self.saved_crops = crops or {}
         self.tkimg = None; self._prev_tk = None
         self.drag_mode = None; self.anchor = None
-        self.aspect = ASPECT                                 # current crop-box aspect
         self.optimise = tk.BooleanVar(value=True)            # boost colour/contrast for e-ink
+        self.keep_orig = tk.BooleanVar(value=False)          # store the full-res original
         self._resize_after = None
+        self._choices = aspect_choices()                     # [(label, akey, (w,h)), ...]
+        init_akey = lock_aspect or start_aspect or panel_aspect_key()
+        self.cur_akey, self.cur_wh = init_akey, wh_for_aspect(init_akey)
+        self.aspect = self.cur_wh[0] / self.cur_wh[1]        # crop-box aspect (device native)
 
         main = ttk.Frame(self, padding=10); main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=0)                    # crop area — natural size
@@ -488,10 +494,22 @@ class CropDialog(tk.Toplevel):
         self.preview_lbl.grid(row=0, column=0, sticky="nsew")
         prev_box.bind("<Configure>", self._on_prev_resize)
 
+        opts = ttk.Frame(self, padding=(10,4)); opts.pack(fill="x")
+        ttk.Label(opts, text="Crop for:").pack(side="left")
+        self.aspect_cb = ttk.Combobox(opts, state="readonly", width=24,
+                                      values=[c[0] for c in self._choices])
+        self.aspect_cb.pack(side="left", padx=(4,0))
+        self.aspect_cb.bind("<<ComboboxSelected>>", self._on_aspect_pick)
+        if mode == "add":
+            so = ttk.Checkbutton(opts, text="Store original image", variable=self.keep_orig)
+            so.pack(side="left", padx=(16,0))
+            _Tooltip(so, "Keep the full-resolution photo (large files). Leave off to store a "
+                         "space-saving ~3000px copy — plenty for any 6-colour frame.")
+
         bar = ttk.Frame(self, padding=(10,0,10,10)); bar.pack(fill="x")
         ttk.Button(bar, text="↻ Rotate image", command=self.rotate_image).pack(side="left")
         ttk.Button(bar, text="Rotate crop box", command=self.toggle_orient).pack(side="left", padx=(8,0))
-        self.orient_lbl = ttk.Label(bar, text="landscape" if ASPECT >= 1 else "portrait")
+        self.orient_lbl = ttk.Label(bar, text="landscape" if self.aspect >= 1 else "portrait")
         self.orient_lbl.pack(side="left", padx=(6,0))
         chk = ttk.Checkbutton(bar, text="Optimise for e-ink", variable=self.optimise,
                               command=self._update_preview)
@@ -507,7 +525,10 @@ class CropDialog(tk.Toplevel):
         self.canvas.bind("<ButtonRelease-1>",
                          lambda e: (setattr(self, "drag_mode", None), self._update_preview()))
         self._fit()
-        self.minsize(self.dw + 260, self.dh + 90)            # keep room for crop + a usable preview
+        self._select_aspect(init_akey)                       # set combobox + load any saved crop
+        if lock_aspect:
+            self.aspect_cb.configure(state="disabled")       # send-flow: fixed to the connected frame
+        self.minsize(self.dw + 300, self.dh + 150)           # room for crop + preview + option rows
 
     def _fit(self):
         iw, ih = self.src.size
@@ -558,7 +579,7 @@ class CropDialog(tk.Toplevel):
             region = self.src.crop((int(self.box[0]/s), int(self.box[1]/s),
                                     int(self.box[2]/s), int(self.box[3]/s))).convert("RGB")
             if region.width < 2 or region.height < 2: return
-            pw, ph = PANEL_W, PANEL_H
+            pw, ph = self.cur_wh
             rotated = (region.width >= region.height) != (pw >= ph)
             panel_src = region.rotate(90, expand=True) if rotated else region
             _, prev = encode_to_panel(panel_src, pw, ph, self.optimise.get())
@@ -577,6 +598,29 @@ class CropDialog(tk.Toplevel):
             try: self.after_cancel(self._resize_after)
             except Exception: pass
         self._resize_after = self.after(120, self._update_preview)
+
+    def _on_aspect_pick(self, _=None):
+        label = self.aspect_cb.get()
+        ch = next((c for c in self._choices if c[0] == label), None)
+        if ch: self._select_aspect(ch[1])
+
+    def _select_aspect(self, akey):
+        """Switch the crop target to an aspect; load its saved crop if one exists, else reset."""
+        ch = next((c for c in self._choices if c[1] == akey), self._choices[0])
+        self.cur_akey, self.cur_wh = ch[1], ch[2]
+        self.aspect_cb.set(ch[0]); self.title(f"Crop for {ch[0]}")
+        saved = self.saved_crops.get(self.cur_akey)
+        if saved:
+            W, H = self.src.size; b = saved["box"]
+            self.box = [b[0]*W*self.scale, b[1]*H*self.scale, b[2]*W*self.scale, b[3]*H*self.scale]
+            bh = (b[3]-b[1])*H
+            self.aspect = ((b[2]-b[0])*W / bh) if bh else self.cur_wh[0]/self.cur_wh[1]
+            self.optimise.set(bool(saved.get("optimise", True)))
+        else:
+            self.aspect = self.cur_wh[0] / self.cur_wh[1]
+            self._reset_box()
+        self.orient_lbl.config(text="landscape" if self.aspect >= 1 else "portrait")
+        self.redraw(); self._update_preview()
 
     def _corner(self, x, y):
         h = self.HANDLE + 4
@@ -620,7 +664,8 @@ class CropDialog(tk.Toplevel):
         s = self.scale; W, H = self.src.size
         nbox = [(self.box[0]/s)/W, (self.box[1]/s)/H, (self.box[2]/s)/W, (self.box[3]/s)/H]
         self.destroy()
-        self.on_done(self.name, self.src, panel_aspect_key(), nbox, self.optimise.get())
+        self.on_done(self.name, self.src, self.cur_akey, nbox,
+                     self.optimise.get(), self.keep_orig.get())
 
 class WifiDialog(tk.Toplevel):
     def __init__(self, master, on_send):
@@ -794,18 +839,21 @@ class App(tk.Tk):
         if messagebox.askyesno("Delete", f"Remove “{name}” from the pool?"):
             delete_from_pool(pid); self.refresh_pool()
 
-    def crop_existing(self, pid, on_saved=None):
+    def crop_existing(self, pid, on_saved=None, lock=False):
         item = next((it for it in load_pool() if it["id"] == pid), None)
         if not item: return
         try:
             img = Image.open(_src_path(pid)).convert("RGB")
         except Exception as e:
             self.log(f"can't open source: {e}"); return
-        def done(name, src_img, akey, nbox, optimise):
+        def done(name, src_img, akey, nbox, optimise, keep_original):
             set_crop(pid, akey, nbox, optimise)
-            self._post(self.refresh_pool); self.log(f"Cropped “{item['name']}” for this frame.")
+            self._post(self.refresh_pool)
+            self.log(f"Saved {akey} crop for “{item['name']}”.")
             if on_saved: self._post(on_saved)
-        self._crop = CropDialog(self, img, item["name"], done)
+        self._crop = CropDialog(self, img, item["name"], done, mode="edit",
+                                crops=item.get("crops", {}), start_aspect=panel_aspect_key(),
+                                lock_aspect=(panel_aspect_key() if lock else None))
 
     def show_item_menu(self, pid, name, widget):
         m = tk.Menu(self, tearoff=0)
@@ -834,13 +882,14 @@ class App(tk.Tk):
                 f"Couldn't read:\n{os.path.basename(path)}\n\n{type(e).__name__}: {e}\n\n"
                 "Save the picture as a JPG or PNG first, then add it.")
             return
-        self._crop = CropDialog(self, img, os.path.basename(path), self._crop_done)
+        self._crop = CropDialog(self, img, os.path.basename(path), self._crop_done,
+                                mode="add", start_aspect=panel_aspect_key())
 
-    def _crop_done(self, name, src_img, akey, nbox, optimise):
+    def _crop_done(self, name, src_img, akey, nbox, optimise, keep_original):
         self.log("Adding…")
         def work():
             try:
-                add_to_pool(name, src_img, akey, nbox, optimise, keep_original=False)
+                add_to_pool(name, src_img, akey, nbox, optimise, keep_original)
                 self._post(self.refresh_pool); self.log(f"Added “{name}” to the pool.")
             except Exception as e:
                 self.log(f"add failed: {e}")
@@ -855,7 +904,7 @@ class App(tk.Tk):
         if not item: return
         if panel_aspect_key() not in item.get("crops", {}):     # not cropped for this frame yet
             self.log("This photo isn't cropped for the connected frame — crop it now.")
-            self.crop_existing(pid, on_saved=lambda: self.send_pool_item(pid))
+            self.crop_existing(pid, on_saved=lambda: self.send_pool_item(pid), lock=True)
             return
         try:
             data = bin_for_pool_item(pid)      # encode this frame's crop at its resolution

@@ -11,12 +11,15 @@ over the frame's USB serial link. Everything stays on your machine.
 
 ## Features
 
-- **Crop‑to‑fit editor** — an aspect‑locked crop box matched to your frame's panel, with
-  rotate and portrait/landscape toggles, plus an **Optimise for e‑ink** option that boosts
-  colour and contrast so photos don't look flat on the limited 6‑colour panel.
-- **Photo pool** — keep a library of prepared photos as thumbnails. Each has **Send**,
-  **Rotate 180°**, and a **⋯** menu (rotate the thumbnail 90°, or delete it). The grid
-  reflows as you widen the window.
+- **Crop‑to‑fit editor** — an aspect‑locked crop box with a **live 6‑colour e‑ink preview**
+  beside it. Choose which frame to crop for (**Crop for:** F7 / F7 Pro / F13 / F8), rotate,
+  and toggle **Optimise for e‑ink** (boosts colour and contrast so photos don't look flat).
+  Optionally **store the original** full‑resolution photo instead of a space‑saving copy.
+- **Photo pool** — keep a library of prepared photos as thumbnails, each with **Send** and a
+  **⋯** menu (**Crop…**, **Delete**). One photo can hold a **separate crop per frame** — so
+  the same photo sends correctly to an F7 Pro *and* an F13 without re‑cropping each time; if
+  you send to a frame it hasn't been cropped for, the crop editor opens for that frame first.
+  The grid reflows as you widen the window.
 - **Auto‑send on connect** — optionally push a random photo from the pool every time you
   plug the frame in, with a 5‑second countdown and a **Stop** button so you can cancel.
   The setting is remembered between runs.
