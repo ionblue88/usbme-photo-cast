@@ -514,6 +514,20 @@ def revalidate_all():
         for it in changed: write_thumbnail(it)
     return [it["name"] for it in changed]
 
+def missing_sources():
+    """Pool items whose source photo is no longer on disk."""
+    return [it for it in load_pool() if not os.path.exists(_src_path(it["id"]))]
+
+def prune_missing(pids):
+    """Drop the given items from pool.json and delete any leftover files for them."""
+    pids = set(pids)
+    save_pool([it for it in load_pool() if it["id"] not in pids])
+    for pid in pids:
+        for f in os.listdir(POOL_DIR):
+            if f.startswith(pid):
+                try: os.remove(os.path.join(POOL_DIR, f))
+                except OSError: pass
+
 # =================================================================
 #                              GUI
 # =================================================================
@@ -856,6 +870,7 @@ class App(tk.Tk):
         self.refresh_pool()
         if changed:
             self.log(f"{len(changed)} photo(s) changed on disk — re-crop them.")
+        self.after(300, self._check_missing)   # offer to prune photos whose files are gone
         threading.Thread(target=self._poll_connection, daemon=True).start()
         self.after(100, self._drain_queue)
 
@@ -934,6 +949,22 @@ class App(tk.Tk):
             try: self.after_cancel(self._relayout_after)
             except Exception: pass
         self._relayout_after = self.after(60, self._relayout)
+
+    def _check_missing(self):
+        missing = missing_sources()
+        if not missing: return
+        names = "\n".join("·  " + it["name"] for it in missing[:8])
+        more = f"\n…and {len(missing) - 8} more" if len(missing) > 8 else ""
+        log.info("%d pool photo(s) missing from disk", len(missing))
+        if messagebox.askyesno(
+                "Photos not found",
+                f"{len(missing)} photo(s) in your pool are no longer on disk:\n\n{names}{more}\n\n"
+                "Remove them from the app?", parent=self):
+            prune_missing([it["id"] for it in missing])
+            self.refresh_pool()
+            self.log(f"Removed {len(missing)} photo(s) missing from disk.")
+        else:
+            self.log(f"{len(missing)} photo(s) missing from disk (kept).")
 
     def delete_item(self, pid, name):
         if messagebox.askyesno("Delete", f"Remove “{name}” from the pool?"):
