@@ -783,7 +783,7 @@ class WifiDialog(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("USBme Photo Cast — © 2026 ionblue88 · AGPL-3.0")
+        self.title(f"USBme Photo Cast — v{__version__}")
         self.geometry("780x640"); self.minsize(720, 480)   # >= 3 thumbnails wide
         self.q = queue.Queue()
         self.serial_lock = threading.Lock()
