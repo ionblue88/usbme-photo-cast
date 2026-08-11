@@ -18,8 +18,12 @@ jobs:
             asset: USBmePhotoCast-windows-x86_64.exe
           - os: macos-14                                                # Apple Silicon (arm64)
             asset: USBmePhotoCast-macos-arm64.tar.gz
+          - os: macos-13                                                # Intel (x86_64)
+            asset: USBmePhotoCast-macos-x86_64.tar.gz
           - os: ubuntu-24.04                                            # glibc 2.39
             asset: USBmePhotoCast-linux-x86_64-ubuntu24.04.tar.gz
+          - os: ubuntu-22.04                                            # glibc 2.35 (broader compat)
+            asset: USBmePhotoCast-linux-x86_64-ubuntu22.04.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
