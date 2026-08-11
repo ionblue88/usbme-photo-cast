@@ -50,6 +50,21 @@ Any 6‑colour e‑ink frame that enumerates as a CH340 USB‑serial device and 
 same protocol should work. Only the **F7 Pro** has been tested on real hardware; the
 other resolutions are wired up but unverified.
 
+## Download
+
+Prebuilt binaries are on the [**Releases**](https://github.com/ionblue88/usbme-photo-cast/releases)
+page — no Python needed:
+
+- **Windows** — grab `USBmePhotoCast.exe` and double‑click. It's unsigned, so the first time
+  SmartScreen may say *"Windows protected your PC"* → **More info → Run anyway**.
+- **macOS** — grab `USBmePhotoCast-macos.tar.gz`, unpack it, and open the app. Because it's
+  unsigned, right‑click it → **Open** the first time to get past Gatekeeper.
+- **Linux** — grab `USBmePhotoCast-linux.tar.gz`, unpack it, and run `./USBmePhotoCast`.
+
+Every release also carries a **Source code** archive if you'd rather [run from source](#run-from-source).
+The macOS/Linux builds come out of CI but aren't yet tested on real hardware — if one misbehaves,
+running from source is the reliable fallback.
+
 ## Requirements
 
 - **Python 3.9+** with Tkinter (bundled with the standard Python installer on Windows and
@@ -60,7 +75,7 @@ other resolutions are wired up but unverified.
 - A USB cable. On **Windows** the frame needs the **CH340** driver (Windows Update usually
   installs it automatically the first time you plug it in).
 
-## Install
+## Run from source
 
 ```bash
 git clone https://github.com/ionblue88/usbme-photo-cast.git

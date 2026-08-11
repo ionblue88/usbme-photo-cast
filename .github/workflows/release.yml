@@ -1,16 +1,20 @@
-name: Build Windows exe
+name: Build release binaries
 
 on:
   push:
-    tags: ["v*"]            # pushing a version tag builds the exe and publishes a Release
-  workflow_dispatch: {}     # manual run from the Actions tab -> builds an artifact only (no Release)
+    tags: ["v*"]            # a version tag builds all three OS binaries and publishes a Release
+  workflow_dispatch: {}     # manual run from the Actions tab -> builds artifacts only (no Release)
 
 permissions:
-  contents: write           # allow the Release step to upload the exe
+  contents: write           # allow the Release step to upload assets
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false      # one OS failing shouldn't block the others
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,19 +27,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller Pillow pyserial numpy pillow-heif pillow-avif-plugin
 
-      - name: Build exe
+      - name: Build
         run: pyinstaller --onefile --windowed --name USBmePhotoCast --collect-all pillow_heif --collect-all pillow_avif usbme_photo_cast.py
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: cd dist && tar -czf USBmePhotoCast-macos.tar.gz USBmePhotoCast.app
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: cd dist && tar -czf USBmePhotoCast-linux.tar.gz USBmePhotoCast
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: USBmePhotoCast-windows
-          path: dist/USBmePhotoCast.exe
+          name: USBmePhotoCast-${{ runner.os }}
+          path: |
+            dist/USBmePhotoCast.exe
+            dist/*.tar.gz
+          if-no-files-found: ignore
 
       - name: Publish Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/USBmePhotoCast.exe
-          fail_on_unmatched_files: true
+          files: |
+            dist/USBmePhotoCast.exe
+            dist/*.tar.gz
+          fail_on_unmatched_files: false
           generate_release_notes: true
