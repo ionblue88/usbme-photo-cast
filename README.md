@@ -55,11 +55,13 @@ other resolutions are wired up but unverified.
 Prebuilt binaries are on the [**Releases**](https://github.com/ionblue88/usbme-photo-cast/releases)
 page — no Python needed:
 
-- **Windows** — grab `USBmePhotoCast.exe` and double‑click. It's unsigned, so the first time
-  SmartScreen may say *"Windows protected your PC"* → **More info → Run anyway**.
-- **macOS** — grab `USBmePhotoCast-macos.tar.gz`, unpack it, and open the app. Because it's
-  unsigned, right‑click it → **Open** the first time to get past Gatekeeper.
-- **Linux** — grab `USBmePhotoCast-linux.tar.gz`, unpack it, and run `./USBmePhotoCast`.
+- **Windows (x86‑64)** — grab `USBmePhotoCast-windows-x86_64.exe` and double‑click. It's unsigned,
+  so the first time SmartScreen may say *"Windows protected your PC"* → **More info → Run anyway**.
+- **macOS (Apple Silicon / arm64)** — grab `USBmePhotoCast-macos-arm64.tar.gz`, unpack it, and open
+  the app (right‑click → **Open** the first time to get past Gatekeeper). Intel Macs: run from source.
+- **Linux (x86‑64, built on Ubuntu 24.04 / glibc 2.39)** — grab
+  `USBmePhotoCast-linux-x86_64-ubuntu24.04.tar.gz`, unpack it, and run `./USBmePhotoCast`. On an
+  older distro (older glibc), run from source instead.
 
 Every release also carries a **Source code** archive if you'd rather [run from source](#run-from-source).
 The macOS/Linux builds come out of CI but aren't yet tested on real hardware — if one misbehaves,
