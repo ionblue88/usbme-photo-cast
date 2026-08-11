@@ -1,0 +1,41 @@
+name: Build Windows exe
+
+on:
+  push:
+    tags: ["v*"]            # pushing a version tag builds the exe and publishes a Release
+  workflow_dispatch: {}     # manual run from the Actions tab -> builds an artifact only (no Release)
+
+permissions:
+  contents: write           # allow the Release step to upload the exe
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller Pillow pyserial numpy pillow-heif pillow-avif-plugin
+
+      - name: Build exe
+        run: pyinstaller --onefile --windowed --name USBmePhotoCast --collect-all pillow_heif --collect-all pillow_avif usbme_photo_cast.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: USBmePhotoCast-windows
+          path: dist/USBmePhotoCast.exe
+
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/USBmePhotoCast.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
