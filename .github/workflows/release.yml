@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write           # allow the Release step to upload assets
 
+concurrency:
+  # re-cutting the same tag cancels a previous (possibly stuck) run instead of piling up
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -18,8 +23,8 @@ jobs:
             asset: USBmePhotoCast-windows-x86_64.exe
           - os: macos-14                                                # Apple Silicon (arm64)
             asset: USBmePhotoCast-macos-arm64.tar.gz
-          - os: macos-13                                                # Intel (x86_64)
-            asset: USBmePhotoCast-macos-x86_64.tar.gz
+          # macos-13 (Intel) dropped: GitHub is retiring Intel runners and they stall the
+          # release queue. Intel-Mac users run from source. Re-add if capacity recovers.
           - os: ubuntu-24.04                                            # glibc 2.39
             asset: USBmePhotoCast-linux-x86_64-ubuntu24.04.tar.gz
           - os: ubuntu-22.04                                            # glibc 2.35 (broader compat)

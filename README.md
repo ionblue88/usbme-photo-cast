@@ -57,9 +57,10 @@ page — no Python needed:
 
 - **Windows (x86‑64)** — grab `USBmePhotoCast-windows-x86_64.exe` and double‑click. It's unsigned,
   so the first time SmartScreen may say *"Windows protected your PC"* → **More info → Run anyway**.
-- **macOS** — grab `USBmePhotoCast-macos-arm64.tar.gz` (Apple Silicon) or
-  `USBmePhotoCast-macos-x86_64.tar.gz` (Intel), unpack it, and open the app (right‑click →
-  **Open** the first time to get past Gatekeeper).
+- **macOS (Apple Silicon)** — grab `USBmePhotoCast-macos-arm64.tar.gz`, unpack it, and open the app
+  (right‑click → **Open** the first time to get past Gatekeeper). *Intel Macs: [run from
+  source](#run-from-source) — a prebuilt Intel binary isn't published (GitHub is retiring its Intel
+  build runners).*
 - **Linux (x86‑64)** — grab `USBmePhotoCast-linux-x86_64-ubuntu24.04.tar.gz`, or
   `…-ubuntu22.04.tar.gz` for older distros (glibc 2.35, broader compatibility). Unpack it, then
   either run `./USBmePhotoCast` straight from the folder, or run **`./install.sh`** to add it to
