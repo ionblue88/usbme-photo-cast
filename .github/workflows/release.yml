@@ -37,8 +37,47 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller Pillow pyserial numpy pillow-heif pillow-avif-plugin
 
-      - name: Build
-        run: pyinstaller --onefile --windowed --name USBmePhotoCast --collect-all pillow_heif --collect-all pillow_avif usbme_photo_cast.py
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          pyinstaller --onefile --windowed --name USBmePhotoCast
+          --icon assets/USBmePhotoCast.ico
+          --add-data "assets/icon.png;."
+          --collect-all pillow_heif --collect-all pillow_avif
+          usbme_photo_cast.py
+
+      - name: Make macOS icon (.icns)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p build/icon.iconset
+          sips -z 16 16   assets/icon.png --out build/icon.iconset/icon_16x16.png
+          sips -z 32 32   assets/icon.png --out build/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32   assets/icon.png --out build/icon.iconset/icon_32x32.png
+          sips -z 64 64   assets/icon.png --out build/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 assets/icon.png --out build/icon.iconset/icon_128x128.png
+          sips -z 256 256 assets/icon.png --out build/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 assets/icon.png --out build/icon.iconset/icon_256x256.png
+          sips -z 512 512 assets/icon.png --out build/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 assets/icon.png --out build/icon.iconset/icon_512x512.png
+          cp assets/icon.png build/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns build/icon.iconset -o build/icon.icns
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          pyinstaller --onefile --windowed --name USBmePhotoCast
+          --icon build/icon.icns
+          --add-data "assets/icon.png:."
+          --collect-all pillow_heif --collect-all pillow_avif
+          usbme_photo_cast.py
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: >
+          pyinstaller --onefile --windowed --name USBmePhotoCast
+          --add-data "assets/icon.png:."
+          --collect-all pillow_heif --collect-all pillow_avif
+          usbme_photo_cast.py
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -50,7 +89,14 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        run: tar -czf "dist/${{ matrix.asset }}" -C dist USBmePhotoCast
+        run: |
+          stage="USBmePhotoCast-linux"
+          mkdir -p "$stage"
+          cp dist/USBmePhotoCast "$stage/"
+          cp assets/icon.png "$stage/usbme-photo-cast.png"
+          cp packaging/linux/install.sh packaging/linux/uninstall.sh "$stage/"
+          chmod +x "$stage/USBmePhotoCast" "$stage/install.sh" "$stage/uninstall.sh"
+          tar -czf "dist/${{ matrix.asset }}" "$stage"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

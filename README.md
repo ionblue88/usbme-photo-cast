@@ -61,8 +61,10 @@ page — no Python needed:
   `USBmePhotoCast-macos-x86_64.tar.gz` (Intel), unpack it, and open the app (right‑click →
   **Open** the first time to get past Gatekeeper).
 - **Linux (x86‑64)** — grab `USBmePhotoCast-linux-x86_64-ubuntu24.04.tar.gz`, or
-  `…-ubuntu22.04.tar.gz` for older distros (glibc 2.35, broader compatibility); unpack it and run
-  `./USBmePhotoCast`. Older still? Run from source.
+  `…-ubuntu22.04.tar.gz` for older distros (glibc 2.35, broader compatibility). Unpack it, then
+  either run `./USBmePhotoCast` straight from the folder, or run **`./install.sh`** to add it to
+  your application menu with an icon so you can launch it by clicking (`./uninstall.sh` removes it
+  again; your photos are untouched). Older distro still? Run from source.
 
 Every release also carries a **Source code** archive if you'd rather [run from source](#run-from-source).
 The macOS/Linux builds come out of CI but aren't yet tested on real hardware — if one misbehaves,
@@ -98,7 +100,8 @@ pip install numpy pillow-heif pillow-avif-plugin
 python usbme_photo_cast.py
 ```
 
-On Windows, launch with `pythonw usbme_photo_cast.py` to run without a console window.
+On Windows, run without a console window either by **double‑clicking `USBmePhotoCast.pyw`** in
+the source folder, or from a terminal with `pythonw usbme_photo_cast.py`.
 
 Then:
 

@@ -1,2 +1,9 @@
 # Normalise line endings to LF in the repository
 * text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts
+*.sh text eol=lf
+
+# Binary assets — never touch
+*.png binary
+*.ico binary

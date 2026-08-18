@@ -36,7 +36,7 @@ Author: ionblue88 · https://github.com/ionblue88/usbme-photo-cast
 __author__ = "ionblue88"
 __copyright__ = "Copyright (C) 2026 ionblue88"
 __license__ = "AGPL-3.0-or-later"
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import os, sys, json, time, random, threading, queue, uuid, re, math, hashlib
 import logging, platform, PIL
@@ -86,6 +86,20 @@ DEVICE_CODE  = [0, 1, 3, 6, 5, 2]     # palette slot -> frame nibble code
 # provenance: usbme-photo-cast — ionblue88 (original author); retain under AGPL-3.0
 
 os.makedirs(POOL_DIR, exist_ok=True)
+
+def _asset(name):
+    """Locate a bundled asset both when frozen (PyInstaller _MEIPASS) and from source."""
+    roots = []
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        roots.append(base)
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots += [here, os.path.join(here, "assets")]
+    for r in roots:
+        p = os.path.join(r, name)
+        if os.path.exists(p):
+            return p
+    return None
 
 # ---------------- encoder ----------------
 def _palette_image():
@@ -800,6 +814,13 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"USBme Photo Cast — v{__version__}")
+        try:
+            _ip = _asset("icon.png")            # window / taskbar icon (Tk 8.6+ reads PNG)
+            if _ip:
+                self._icon_img = tk.PhotoImage(file=_ip)   # keep a reference so Tk doesn't GC it
+                self.iconphoto(True, self._icon_img)
+        except Exception:
+            log.debug("window icon not set", exc_info=True)
         self.geometry("780x640"); self.minsize(720, 480)   # >= 3 thumbnails wide
         self.q = queue.Queue()
         self.serial_lock = threading.Lock()
